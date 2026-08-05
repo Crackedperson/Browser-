@@ -11,6 +11,10 @@ on:
         description: "Seconds to stay on the page"
         required: true
         default: "10"
+      phone:
+        description: "10-digit phone number to enter (no country code, e.g. 9876543210)"
+        required: true
+        default: ""
 
 jobs:
   record:
@@ -61,6 +65,7 @@ jobs:
           TARGET_URL: ${{ inputs.url }}
           DURATION_SECONDS: ${{ inputs.duration }}
           BRAVE_PATH: ${{ env.BRAVE_PATH }}
+          PHONE_NUMBER: ${{ inputs.phone }}
         run: xvfb-run -a node record.js
 
       - name: Show recorded files (debug)

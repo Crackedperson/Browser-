@@ -35,6 +35,7 @@ async function findAnyVideoFiles(dir = "videos") {
   const url = process.env.TARGET_URL;
   const duration = parseInt(process.env.DURATION_SECONDS || "10", 10);
   const bravePath = process.env.BRAVE_PATH || "/usr/bin/brave-browser";
+  const phoneNumber = (process.env.PHONE_NUMBER || "").trim(); // expects 10-digit number, no country code
 
   if (!url) {
     console.error("TARGET_URL env var is required");
@@ -83,8 +84,81 @@ async function findAnyVideoFiles(dir = "videos") {
   // Small pause so the loaded page is visible before scrolling
   await page.waitForTimeout(1500);
 
-  // Scroll down a little, like a real visitor glancing at the page
+  // Scroll down a little, like a real visitor glancing at the page (reveals inputs/checkbox)
   await page.mouse.wheel(0, 400);
+
+  // --- Fill phone number (best-effort) ---
+  if (phoneNumber) {
+    try {
+      await page.waitForTimeout(300); // allow lazy content
+      let phoneLocator = null;
+
+      // 1) Try placeholder-based locator (common)
+      if (page.getByPlaceholder) {
+        const p = page.getByPlaceholder('Enter 10-digit number', { exact: false }).first();
+        if ((await p.count()) > 0) phoneLocator = p;
+      }
+
+      // 2) Generic common selectors
+      if (!phoneLocator) {
+        const candidate = page.locator('input[type="tel"], input[placeholder*="10"], input[name*="phone" i], input[id*="phone" i], input[aria-label*="phone" i]').first();
+        if ((await candidate.count()) > 0) phoneLocator = candidate;
+      }
+
+      // 3) Fallback: find an input near the +91 text
+      if (!phoneLocator) {
+        const country = page.locator('text="+91"').first();
+        if ((await country.count()) > 0) {
+          // attempt to find the first input following the country node in the DOM
+          const handle = await country.elementHandle();
+          if (handle) {
+            const inputHandle = await handle.evaluateHandle((el) => {
+              // search forward for an input element in the DOM tree
+              const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null, false);
+              let foundCountry = false;
+              while (walker.nextNode()) {
+                const node = walker.currentNode;
+                if (!foundCountry) {
+                  if (node.isSameNode(el)) foundCountry = true;
+                } else {
+                  if (node.tagName && node.tagName.toLowerCase() === 'input') return node;
+                  const input = node.querySelector && node.querySelector('input');
+                  if (input) return input;
+                }
+              }
+              return null;
+            });
+            if (inputHandle) {
+              // create locator from element handle by getting a unique attribute if possible; fallback to first visible input
+              await inputHandle.dispose();
+              const fallback = page.locator('input').filter({ has: page.locator('xpath=..') }).first(); // fallback path - but we keep generic fallback below
+            }
+          }
+        }
+      }
+
+      // Final fallback: use first visible input on page (use with caution)
+      if (!phoneLocator) {
+        const firstInput = page.locator('input').filter({ hasText: '' }).first();
+        if ((await firstInput.count()) > 0) phoneLocator = firstInput;
+      }
+
+      if (!phoneLocator || (await phoneLocator.count()) === 0) {
+        throw new Error("Phone input not found by any selector");
+      }
+
+      await phoneLocator.scrollIntoViewIfNeeded();
+      await phoneLocator.click({ timeout: 3000 }).catch(() => {});
+      // clear any existing value (some inputs require selectText+press Backspace; use fill to replace)
+      await phoneLocator.fill('');
+      await phoneLocator.fill(phoneNumber, { timeout: 5000 });
+      console.log('Filled phone number:', phoneNumber);
+    } catch (err) {
+      console.warn('Failed to fill phone number (continuing):', err && err.message ? err.message : err);
+    }
+  } else {
+    console.warn('PHONE_NUMBER not provided; skipping phone fill.');
+  }
 
   // --- Try to find & check the "I agree" checkbox after scrolling ---
   try {
@@ -97,15 +171,15 @@ async function findAnyVideoFiles(dir = "videos") {
       await agree.check({ timeout: 3000 }).catch(() => {});
       console.log("Checked 'I agree' checkbox (by role).");
     } else {
-      // fallback: click first checkbox input or label
+      // fallback: click label or first checkbox
       const label = page.locator('text=/I agree to the|I agree/i').first();
       if ((await label.count()) > 0) {
-        await label.click({ timeout: 3000 });
+        await label.click({ timeout: 3000 }).catch(() => {});
         console.log("Clicked label containing 'I agree' to toggle checkbox.");
       } else {
-        const firstCheckbox = page.locator('input[type=\"checkbox\"]').first();
-        await firstCheckbox.waitFor({ state: 'visible', timeout: 2000 });
-        await firstCheckbox.check({ timeout: 2000 });
+        const firstCheckbox = page.locator('input[type="checkbox"]').first();
+        await firstCheckbox.waitFor({ state: 'visible', timeout: 2000 }).catch(() => {});
+        await firstCheckbox.check({ timeout: 2000 }).catch(() => {});
         console.log("Checked the first input[type=checkbox] on the page.");
       }
     }

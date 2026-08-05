@@ -24,21 +24,49 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install dependencies
-        run: npm install playwright
+      - name: Install npm dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            npm init -y
+            npm install playwright
+          fi
 
-      - name: Install real Chrome + Playwright deps
-        run: npx playwright install --with-deps chrome
+      - name: Install Brave browser and xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-transport-https curl gnupg ca-certificates
+          # Add Brave key + repo (fallback to apt-key if gpg dearmor not available)
+          curl -fsSL https://brave-browser-apt-release.s3.brave.com/brave-core.asc -o /tmp/brave-core.asc
+          sudo apt-key add /tmp/brave-core.asc || true
+          echo "deb [arch=amd64] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+          sudo apt-get update
+          sudo apt-get install -y brave-browser xvfb
 
-      - name: Visit site and record (real Chrome, virtual display)
+      - name: Install Playwright system dependencies
+        # installs system libraries needed by Playwright / browsers
+        run: sudo npx playwright install-deps
+
+      - name: Find Brave executable path
+        # Save the path to BRAVE_PATH env var for record.js to use
+        run: |
+          which brave-browser || which brave || true
+          echo "BRAVE_PATH=$(which brave-browser || which brave || true)" >> $GITHUB_ENV
+
+      - name: Visit site and record (Brave, visible)
         env:
           TARGET_URL: ${{ inputs.url }}
           DURATION_SECONDS: ${{ inputs.duration }}
+          BRAVE_PATH: ${{ env.BRAVE_PATH }}
+        # Use xvfb-run to provide a virtual display for the visible browser
         run: xvfb-run -a node record.js
 
       - name: Upload recording as artifact
         uses: actions/upload-artifact@v4
         with:
           name: website-recording
-          path: videos/*.webm
+          path: videos/**/video.webm
           if-no-files-found: error

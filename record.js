@@ -82,6 +82,80 @@ async function findAnyVideoFiles(dir = "videos") {
   await page.waitForTimeout(1500);
   await page.mouse.wheel(0, 400);
 
+  // --- Click Cloudflare "Verify you are human" CAPTCHA ---
+  try {
+    console.log("Attempting to click Cloudflare CAPTCHA checkbox...");
+    await page.waitForTimeout(1000);
+    
+    // Try to find and click the CAPTCHA checkbox
+    let captchaClicked = false;
+    
+    // Method 1: Direct checkbox within .cf-turnstile container
+    try {
+      const turnstileContainer = page.locator('.cf-turnstile, .cf-challenge, [data-cf-turnstile]').first();
+      if (await turnstileContainer.count() > 0) {
+        const checkbox = turnstileContainer.locator('input[type="checkbox"]').first();
+        await checkbox.waitFor({ state: 'visible', timeout: 3000 });
+        await checkbox.click({ timeout: 3000 });
+        console.log("Clicked Cloudflare CAPTCHA checkbox (direct).");
+        captchaClicked = true;
+      }
+    } catch (e) {}
+    
+    // Method 2: Look for the checkbox by aria-label or title
+    if (!captchaClicked) {
+      try {
+        const cfCheckbox = page.locator('input[type="checkbox"][aria-label*="human" i], input[type="checkbox"][title*="human" i], input[type="checkbox"][name*="cf-turnstile" i]').first();
+        await cfCheckbox.waitFor({ state: 'visible', timeout: 3000 });
+        await cfCheckbox.click({ timeout: 3000 });
+        console.log("Clicked Cloudflare CAPTCHA checkbox (by aria-label/title).");
+        captchaClicked = true;
+      } catch (e) {}
+    }
+    
+    // Method 3: Click by text "Verify you are human"
+    if (!captchaClicked) {
+      try {
+        const verifyText = page.locator('text=/Verify you are human/i').first();
+        await verifyText.click({ timeout: 3000 });
+        console.log("Clicked CAPTCHA by text label.");
+        captchaClicked = true;
+      } catch (e) {}
+    }
+    
+    // Method 4: Iframe approach - Cloudflare often loads in an iframe
+    if (!captchaClicked) {
+      try {
+        const captchaFrame = page.frameLocator('iframe[src*="challenges.cloudflare"], iframe[src*="turnstile"], iframe[title*="challenge" i], iframe[name*="cf" i]').first();
+        const frameCheckbox = captchaFrame.locator('input[type="checkbox"]').first();
+        await frameCheckbox.waitFor({ state: 'visible', timeout: 5000 });
+        await frameCheckbox.click({ timeout: 3000 });
+        console.log("Clicked Cloudflare CAPTCHA checkbox (inside iframe).");
+        captchaClicked = true;
+      } catch (e) {}
+    }
+    
+    // Method 5: Brute force - find any checkbox near Cloudflare branding
+    if (!captchaClicked) {
+      try {
+        const anyCheckbox = page.locator('input[type="checkbox"]').first();
+        await anyCheckbox.waitFor({ state: 'visible', timeout: 2000 });
+        await anyCheckbox.click({ timeout: 2000 });
+        console.log("Clicked first available checkbox (fallback).");
+        captchaClicked = true;
+      } catch (e) {}
+    }
+    
+    if (!captchaClicked) {
+      console.warn("Could not locate or click Cloudflare CAPTCHA checkbox.");
+    } else {
+      // Wait a moment after clicking to see if challenge appears
+      await page.waitForTimeout(2000);
+    }
+  } catch (err) {
+    console.warn("Failed to click Cloudflare CAPTCHA (continuing):", err && err.message ? err.message : err);
+  }
+
   // --- Fill phone number ---
   if (phoneNumber) {
     try {

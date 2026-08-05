@@ -32,6 +32,12 @@ const { chromium } = require("playwright");
     console.error(`Failed to load ${url}:`, err.message);
   }
 
+  // Small pause so the loaded page is visible before scrolling
+  await page.waitForTimeout(1500);
+
+  // Scroll down a little, like a real visitor glancing at the page
+  await page.mouse.wheel(0, 400);
+
   await page.waitForTimeout(duration * 1000);
 
   // Closing the context finalizes and writes the .webm video file

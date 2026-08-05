@@ -50,6 +50,9 @@ jobs:
         # installs system libraries needed by Playwright / browsers
         run: sudo npx playwright install-deps
 
+      - name: Install Playwright ffmpeg
+        run: npx playwright install ffmpeg
+
       - name: Find Brave executable path
         # Save the path to BRAVE_PATH env var for record.js to use
         run: |

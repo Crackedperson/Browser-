@@ -1,24 +1,94 @@
-name: Run request via Webshare proxy
+name: Visit and Record Website
+
 on:
   workflow_dispatch:
+    inputs:
+      url:
+        description: "Website URL to visit"
+        required: true
+        default: "https://example.com"
+      duration:
+        description: "Seconds to stay on the page"
+        required: true
+        default: "10"
+      phone:
+        description: "10-digit phone number to enter (no country code, e.g. 9876543210)"
+        required: true
+        default: ""
 
 jobs:
-  run-proxy-request:
+  record:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Use Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "24"
 
-      - name: Install dependencies
+      - name: Install npm dependencies
         run: |
-          npm ci || npm install
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            npm init -y
+            npm install playwright
+          fi
 
-      - name: Run request script with Webshare proxy
+      - name: Install Brave browser and xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-transport-https curl gnupg ca-certificates
+          curl -fsSL https://brave-browser-apt-release.s3.brave.com/brave-core.asc -o /tmp/brave-core.asc
+          sudo apt-key add /tmp/brave-core.asc || true
+          echo "deb [arch=amd64] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+          sudo apt-get update
+          sudo apt-get install -y brave-browser xvfb ffmpeg
+
+      - name: Install Playwright system dependencies
+        run: sudo npx playwright install-deps
+
+      - name: Install Playwright ffmpeg
+        run: npx playwright install ffmpeg
+
+      - name: Find Brave executable path
+        run: |
+          which brave-browser || which brave || true
+          echo "BRAVE_PATH=$(which brave-browser || which brave || true)" >> $GITHUB_ENV
+
+      - name: Visit site and record (Brave, visible)
         env:
-          WEBSHARE_PROXY_URL: ${{ secrets.WEBSHARE_PROXY_URL }}
-        run: node request-with-webshare-proxy.js
+          TARGET_URL: ${{ inputs.url }}
+          DURATION_SECONDS: ${{ inputs.duration }}
+          BRAVE_PATH: ${{ env.BRAVE_PATH }}
+          PHONE_NUMBER: ${{ inputs.phone }}
+        run: xvfb-run -a node record.js
+
+      - name: Show recorded files (debug)
+        run: |
+          echo "Working directory: $(pwd)"
+          echo "List top-level:"
+          ls -la || true
+          echo "--- videos/ ---"
+          ls -la videos || true
+          echo "--- artifacts/ ---"
+          ls -la artifacts || true
+          echo "--- screenshots/ ---"
+          ls -la screenshots || true
+          echo "--- recursive find for videos and artifacts ---"
+          find . -maxdepth 6 -type f -name "*.webm" -o -name "*.png" -o -name "page-*.html" -print || true
+
+      - name: Upload recording and fallback artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-recording
+          path: |
+            videos/**/*
+            artifacts/**/*
+            screenshots/**/*
+            page-*.html
+          if-no-files-found: error

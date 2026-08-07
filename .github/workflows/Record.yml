@@ -15,6 +15,7 @@ on:
         description: "10-digit phone number"
         required: true
         default: ""
+      # REMOVED: proxy input (now using secret)
 
 jobs:
   record:
@@ -74,7 +75,7 @@ jobs:
           DURATION_SECONDS: ${{ inputs.duration }}
           BRAVE_PATH: ${{ env.BRAVE_PATH }}
           PHONE_NUMBER: ${{ inputs.phone }}
-          # Add your Webshare proxy here or use GitHub Secret
+          # Read proxy from SECRET instead of input
           PROXY_SERVER: ${{ secrets.WEBSHARE_PROXY }}
           FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
@@ -100,4 +101,4 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker stop flaresolverr 2>/dev/null || warn
+        run: docker stop flaresolverr 2>/dev/null || true

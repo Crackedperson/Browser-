@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const AUTH_PATH = 'auth.json';
+const FLARESOLVERR_URL = process.env.FLARESOLVERR_URL || 'http://localhost:8191/v1';
 
 async function ensureDir(dir) {
   try {
@@ -19,7 +20,7 @@ async function findAnyVideoFiles(dir = "videos") {
         const full = path.join(d, ent.name);
         if (ent.isDirectory()) {
           await walk(full);
-        } else if (/\.(webm|mp4|mkv)$/i.test(ent.name)) {
+        } else if (/\.(webm|mp4|mkv|mov)$/i.test(ent.name)) {
           found.push(full);
         }
       }
@@ -31,77 +32,128 @@ async function findAnyVideoFiles(dir = "videos") {
   }
 }
 
-// Random delay between min and max milliseconds
+async function getFlareSolverrCookies(targetUrl) {
+  try {
+    const response = await fetch(FLARESOLVERR_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cmd: 'request.get',
+        url: targetUrl,
+        maxTimeout: 60000
+      })
+    });
+    
+    const data = await response.json();
+    if (data.status === 'ok') {
+      console.log('✓ FlareSolverr bypassed Cloudflare');
+      return {
+        cookies: data.solution.cookies,
+        userAgent: data.solution.userAgent
+      };
+    }
+  } catch (e) {
+    console.log('✗ FlareSolverr not available');
+  }
+  return null;
+}
+
+async function applyEnhancedStealth(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    Object.defineProperty(navigator, 'plugins', { 
+      get: () => [
+        {name: "Chrome PDF Plugin", filename: "internal-pdf-viewer"},
+        {name: "Native Client", filename: "native-client.nmf"}
+      ] 
+    });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    
+    window.chrome = { 
+      runtime: {
+        OnInstalledReason: {CHROME_UPDATE: "chrome_update"},
+        PlatformArch: {X86_64: "x86-64"},
+        PlatformOs: {LINUX: "linux"}
+      }
+    };
+    
+    Object.defineProperty(navigator, 'permissions', {
+      get: () => ({ query: () => Promise.resolve({ state: 'prompt' }) })
+    });
+    
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function(type) {
+      const context = originalGetContext.call(this, type);
+      if (type === '2d' && context) {
+        context.canvas.dataset.fingerprint = Math.random().toString(36);
+      }
+      return context;
+    };
+    
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+      if (parameter === 37445) return 'Intel Inc.';
+      if (parameter === 37446) return 'Intel Iris Xe Graphics';
+      return getParameter.call(this, parameter);
+    };
+    
+    delete navigator.__proto__.webdriver;
+  });
+}
+
 const humanDelay = (min, max) => new Promise(r => 
   setTimeout(r, Math.random() * (max - min) + min)
 );
 
-// Human-like mouse movement with curve
 async function humanMouseMove(page, targetX, targetY) {
-  const startPos = await page.evaluate(() => ({
-    x: window.mouseX || 100,
-    y: window.mouseY || 100
-  }));
-  
-  const steps = Math.floor(Math.random() * 15) + 10; // 10-25 steps
-  const currentX = startPos.x || 100;
-  const currentY = startPos.y || 100;
+  const startX = Math.floor(Math.random() * 200) + 50;
+  const startY = Math.floor(Math.random() * 200) + 50;
+  const steps = Math.floor(Math.random() * 15) + 10;
   
   for (let i = 0; i <= steps; i++) {
-    const progress = i / steps;
-    // Add slight curve/bezier effect
-    const curveX = Math.sin(progress * Math.PI) * (Math.random() * 50 - 25);
-    const curveY = Math.cos(progress * Math.PI) * (Math.random() * 30 - 15);
-    
-    const x = currentX + (targetX - currentX) * progress + curveX;
-    const y = currentY + (targetY - currentY) * progress + curveY;
+    const t = i / steps;
+    const curveX = Math.sin(t * Math.PI) * (Math.random() * 60 - 30);
+    const curveY = Math.cos(t * Math.PI) * (Math.random() * 40 - 20);
+    const x = startX + (targetX - startX) * t + curveX;
+    const y = startY + (targetY - startY) * t + curveY;
     
     await page.mouse.move(x, y);
-    await humanDelay(8, 20); // Small delay between movements
+    await humanDelay(8, 20);
   }
-  
-  // Store last position
-  await page.evaluate((x, y) => {
-    window.mouseX = x;
-    window.mouseY = y;
-  }, targetX, targetY);
 }
 
-// Smooth scroll like human
 async function humanScroll(page, amount) {
-  const steps = Math.floor(Math.abs(amount) / 50) + 3; // One step per ~50px
+  const steps = Math.floor(Math.abs(amount) / 50) + 3;
   const perStep = amount / steps;
   
   for (let i = 0; i < steps; i++) {
     await page.mouse.wheel(0, perStep);
-    await humanDelay(50, 150); // Random pause between scrolls
+    await humanDelay(50, 150);
   }
 }
 
-// Type like human - character by character with mistakes and corrections
 async function humanType(page, locator, text) {
   await locator.click();
-  await humanDelay(100, 300);
+  await humanDelay(150, 350);
   
-  // Clear existing
-  await locator.fill('');
+  await locator.press('Control+a');
+  await humanDelay(50, 150);
+  await locator.press('Delete');
   await humanDelay(200, 400);
   
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     
-    // Occasional typo (5% chance) then backspace
-    if (Math.random() < 0.05 && i > 0) {
-      const wrongChar = String.fromCharCode(97 + Math.floor(Math.random() * 26)); // random letter
-      await locator.type(wrongChar, { delay: Math.random() * 50 + 30 });
-      await humanDelay(100, 300);
+    if (Math.random() < 0.03 && i > 0) {
+      const wrongChar = String.fromCharCode(97 + Math.floor(Math.random() * 26));
+      await locator.type(wrongChar, { delay: Math.random() * 60 + 40 });
+      await humanDelay(150, 400);
       await locator.press('Backspace');
-      await humanDelay(80, 200);
+      await humanDelay(100, 250);
     }
     
-    // Type the correct character
-    await locator.type(char, { delay: Math.random() * 80 + 40 }); // 40-120ms per char
-    await humanDelay(30, 100); // Small pause between chars
+    await locator.type(char, { delay: Math.random() * 80 + 30 });
+    await humanDelay(20, 80);
   }
 }
 
@@ -110,260 +162,179 @@ async function humanType(page, locator, text) {
   const duration = parseInt(process.env.DURATION_SECONDS || "10", 10);
   const bravePath = process.env.BRAVE_PATH || "/usr/bin/brave-browser";
   const phoneNumber = (process.env.PHONE_NUMBER || "").trim();
+  const proxy = process.env.PROXY_SERVER;
 
   if (!url) {
     console.error("TARGET_URL env var is required");
     process.exit(1);
   }
 
-  console.log(`Launching Brave at ${bravePath}, visiting ${url} for ${duration}s...`);
+  let flareCookies = null;
+  if (!fs.existsSync(AUTH_PATH)) {
+    console.log("Trying FlareSolverr...");
+    flareCookies = await getFlareSolverrCookies(url);
+  }
+
+  console.log(`Launching Brave, visiting ${url} for ${duration}s...`);
+
+  const launchArgs = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--disable-web-security",
+    "--disable-dev-shm-usage",
+    "--window-size=1920,1080"
+  ];
+
+  if (proxy) {
+    launchArgs.push(`--proxy-server=${proxy}`);
+    console.log("Using proxy:", proxy);
+  }
 
   const browser = await chromium.launch({
     executablePath: bravePath,
     headless: false,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-features=IsolateOrigins,site-per-process",
-      "--disable-web-security",
-      "--disable-dev-shm-usage",
-      "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    ],
+    args: launchArgs,
   });
 
   const hasSession = fs.existsSync(AUTH_PATH);
-  console.log(hasSession ? `Found existing session at ${AUTH_PATH}` : 'No session found, using stealth mode');
-
+  
   let context;
   try {
     const contextOptions = {
       viewport: { width: 1920, height: 1080 },
-      recordVideo: {
-        dir: "videos/",
-        size: { width: 1280, height: 720 },
-      },
+      recordVideo: { dir: "videos/", size: { width: 1280, height: 720 } },
     };
     
     if (hasSession) {
       contextOptions.storageState = AUTH_PATH;
+      console.log("Using saved session");
     }
     
     context = await browser.newContext(contextOptions);
-  } catch (err) {
-    const msg = String(err && err.message ? err.message : err).toLowerCase();
-    if (msg.includes("ffmpeg") || msg.includes("video") || msg.includes("record")) {
-      console.warn("RecordVideo failed. Falling back to context without video.");
-      const fallbackOptions = { viewport: { width: 1920, height: 1080 } };
-      if (hasSession) fallbackOptions.storageState = AUTH_PATH;
-      context = await browser.newContext(fallbackOptions);
-    } else {
-      console.error("Failed to create browser context:", err);
-      await browser.close();
-      process.exit(1);
+    
+    if (flareCookies && !hasSession) {
+      await context.addCookies(flareCookies.cookies.map(c => ({
+        name: c.name, value: c.value, domain: c.domain,
+        path: c.path, expires: c.expires, httpOnly: c.httpOnly,
+        secure: c.secure, sameSite: c.sameSite
+      })));
     }
+  } catch (err) {
+    console.warn("Video recording failed, retrying:", err.message);
+    const fallback = { viewport: { width: 1920, height: 1080 } };
+    if (hasSession) fallback.storageState = AUTH_PATH;
+    context = await browser.newContext(fallback);
   }
 
   const page = await context.newPage();
-
-  // Initialize mouse tracking
-  await page.evaluate(() => {
-    window.mouseX = 100;
-    window.mouseY = 100;
-    document.addEventListener('mousemove', (e) => {
-      window.mouseX = e.clientX;
-      window.mouseY = e.clientY;
-    });
+  await applyEnhancedStealth(page);
+  
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Referer': 'https://www.google.com/',
+    'sec-ch-ua': '"Chromium";v="126", "Brave";v="126"'
   });
 
-  // Stealth injection
-  if (!hasSession) {
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      window.chrome = { runtime: {} };
-      Object.defineProperty(navigator, 'permissions', {
-        get: () => ({ query: () => Promise.resolve({ state: 'prompt' }) })
-      });
-      delete navigator.__proto__.webdriver;
-    });
-    
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      'Referer': 'https://www.google.com/'
-    });
-  }
+  await page.mouse.move(Math.random() * 400, Math.random() * 300);
 
   try {
     await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
-    console.log("Page loaded successfully");
+    console.log("Page loaded");
   } catch (err) {
-    console.error(`Failed to load ${url}:`, err && err.message ? err.message : err);
+    console.error("Load error:", err.message);
   }
 
-  // Human-like initial behavior - move mouse randomly then scroll
-  await humanMouseMove(page, Math.random() * 300 + 200, Math.random() * 200 + 100);
-  await humanDelay(800, 1500);
-  
-  // Smooth scroll down like human reading
+  await humanDelay(1000, 2000);
+  await humanMouseMove(page, 400, 300);
   await humanScroll(page, 400);
-  await humanDelay(500, 1000);
+  await humanDelay(800, 1500);
 
-  // Check for CAPTCHA
-  try {
-    const cfDetected = await page.evaluate(() => {
-      return !!document.querySelector('.cf-turnstile, .cf-challenge, iframe[src*="challenges.cloudflare"]');
-    });
-    
-    if (cfDetected && !hasSession) {
-      console.log("⚠️  CAPTCHA detected! Stealth mode failed.");
-      console.log("Solve it manually now...");
-      await page.waitForTimeout(10000);
-    }
-  } catch (e) {}
+  const cfPresent = await page.evaluate(() => {
+    return !!document.querySelector('.cf-turnstile, .cf-challenge');
+  });
+  
+  if (cfPresent) {
+    console.log("⚠️  CAPTCHA detected. Solve manually or check session...");
+    await page.waitForTimeout(10000);
+  }
 
-  // --- Fill phone number with human typing ---
   if (phoneNumber) {
     try {
-      await humanDelay(400, 800);
-      let phoneLocator = null;
-
-      const p = page.getByPlaceholder('Enter 10-digit number', { exact: false }).first();
-      if ((await p.count()) > 0) phoneLocator = p;
-
-      if (!phoneLocator) {
-        const candidate = page.locator('input[type="tel"], input[placeholder*="10"], input[name*="phone" i], input[id*="phone" i]').first();
-        if ((await candidate.count()) > 0) phoneLocator = candidate;
-      }
-
-      if (!phoneLocator) {
-        const firstInput = page.locator('input').filter({ hasText: '' }).first();
-        if ((await firstInput.count()) > 0) phoneLocator = firstInput;
-      }
-
-      if (!phoneLocator || (await phoneLocator.count()) === 0) {
-        throw new Error("Phone input not found");
-      }
-
-      // Get element position and move mouse there naturally
-      const box = await phoneLocator.boundingBox();
-      if (box) {
-        await humanMouseMove(page, box.x + box.width/2, box.y + box.height/2);
-      }
+      await humanDelay(600, 1200);
+      const phoneLocator = 
+        page.locator('input[type="tel"]').first() ||
+        page.locator('input[placeholder*="10"]').first() ||
+        page.locator('input').first();
       
-      await phoneLocator.scrollIntoViewIfNeeded();
-      await humanDelay(200, 400);
-      
-      // Human-like typing with character delays
-      await humanType(page, phoneLocator, phoneNumber);
-      console.log('Filled phone number:', phoneNumber);
-      
-      await humanDelay(300, 600);
+      if (await phoneLocator.count() > 0) {
+        const box = await phoneLocator.boundingBox();
+        if (box) await humanMouseMove(page, box.x + box.width/2, box.y + box.height/2);
+        await humanType(page, phoneLocator, phoneNumber);
+        console.log('Phone entered');
+      }
     } catch (err) {
-      console.warn('Failed to fill phone number:', err.message);
+      console.warn('Phone error:', err.message);
     }
   }
 
-  // --- Check "I agree" checkbox with human movement ---
   try {
     await humanDelay(400, 800);
     const agree = page.getByRole('checkbox', { name: /I agree/i }).first();
-    
-    const agreeBox = await agree.boundingBox().catch(() => null);
-    if (agreeBox) {
-      // Move to checkbox like human would
-      await humanMouseMove(page, agreeBox.x + agreeBox.width/2, agreeBox.y + agreeBox.height/2);
+    const box = await agree.boundingBox().catch(() => null);
+    if (box) {
+      await humanMouseMove(page, box.x + box.width/2, box.y + box.height/2);
       await humanDelay(200, 400);
     }
-    
-    await agree.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
-    await agree.check({ timeout: 3000 }).catch(() => {});
-    console.log("Checked 'I agree' checkbox");
-    await humanDelay(300, 500);
-  } catch (e) {
-    console.warn("Failed to check 'I agree' checkbox:", e.message);
-  }
+    await agree.check({ timeout: 5000 }).catch(() => {});
+    console.log("Checked agreement");
+  } catch (e) {}
 
-  // --- Click LAUNCH ATTACK button with human behavior ---
   try {
-    console.log("Waiting 5 seconds safety delay...");
+    console.log("Safety delay...");
     await page.waitForTimeout(5000);
+    const launchBtn = page.getByRole('button', { name: /LAUNCH ATTACK/i }).first();
     
-    let launchBtn = null;
-    
-    try {
-      launchBtn = page.getByRole('button', { name: /LAUNCH ATTACK/i });
-      await launchBtn.waitFor({ state: 'visible', timeout: 3000 });
-    } catch (e) {
-      try {
-        launchBtn = page.locator('button:has-text("LAUNCH ATTACK")');
-        await launchBtn.waitFor({ state: 'visible', timeout: 2000 });
-      } catch (e2) {
-        launchBtn = page.locator('button[class*="bg-blue"], button[class*="launch"], button[type="submit"]').first();
-      }
-    }
-    
-    if (launchBtn) {
-      const btnBox = await launchBtn.boundingBox().catch(() => null);
-      if (btnBox) {
-        // Move to button with human curve path
-        await humanMouseMove(page, btnBox.x + btnBox.width/2, btnBox.y + btnBox.height/2);
-      }
-      
-      await launchBtn.scrollIntoViewIfNeeded();
-      await humanDelay(200, 500);
-      
-      // Sometimes humans hesitate before important clicks
-      if (Math.random() < 0.3) {
-        await humanDelay(500, 1000);
-      }
-      
+    if (await launchBtn.count() > 0) {
+      const box = await launchBtn.boundingBox();
+      if (box) await humanMouseMove(page, box.x + box.width/2, box.y + box.height/2);
+      if (Math.random() < 0.3) await humanDelay(600, 1200);
       await launchBtn.click({ timeout: 5000 });
-      console.log("Clicked LAUNCH ATTACK button");
-      await humanDelay(500, 1000);
+      console.log("Clicked launch");
     }
   } catch (err) {
-    console.warn("Failed to click Launch Attack:", err.message);
+    console.warn("Launch error:", err.message);
   }
 
-  // Final wait for recording
   await page.waitForTimeout(duration * 1000);
 
-  // Capture artifacts
   try {
     await ensureDir("screenshots");
     await ensureDir("artifacts");
-    const timestamp = Date.now();
-    const screenshotPath = path.join("screenshots", `screenshot-${timestamp}.png`);
-    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
-    const htmlContent = await page.content().catch(() => "<html><body>no-html</body></html>");
-    const htmlPath = `page-${timestamp}.html`;
-    await fs.promises.writeFile(path.join("artifacts", htmlPath), htmlContent, "utf8");
-    console.log("Saved screenshot and HTML");
-  } catch (e) {
-    console.warn("Failed to capture artifacts:", e.message);
-  }
+    const ts = Date.now();
+    await page.screenshot({ path: `screenshots/screenshot-${ts}.png`, fullPage: true });
+    const html = await page.content();
+    await fs.promises.writeFile(`artifacts/page-${ts}.html`, html);
+  } catch (e) {}
 
-  // Save session
   try {
     await context.storageState({ path: AUTH_PATH });
-    console.log(`Session saved to ${AUTH_PATH}`);
+    console.log("Session saved to auth.json");
   } catch (e) {
-    console.warn("Failed to save session:", e.message);
+    console.warn("Session save failed:", e.message);
   }
 
   await context.close();
   await browser.close();
-
-  const videoFiles = await findAnyVideoFiles("videos");
-  if (videoFiles.length > 0) {
-    console.log("Video files produced:");
-    for (const f of videoFiles) console.log(" -", f);
+  
+  const videos = await findAnyVideoFiles("videos");
+  if (videos.length > 0) {
+    console.log("Videos:", videos);
     process.exit(0);
   }
-
-  console.log("No video files found. Check screenshots/ and artifacts/");
+  
+  console.log("Done. Check screenshots/ and artifacts/");
   process.exit(0);
 })();

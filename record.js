@@ -31,10 +31,79 @@ async function findAnyVideoFiles(dir = "videos") {
   }
 }
 
-// Human-like random delay
+// Random delay between min and max milliseconds
 const humanDelay = (min, max) => new Promise(r => 
   setTimeout(r, Math.random() * (max - min) + min)
 );
+
+// Human-like mouse movement with curve
+async function humanMouseMove(page, targetX, targetY) {
+  const startPos = await page.evaluate(() => ({
+    x: window.mouseX || 100,
+    y: window.mouseY || 100
+  }));
+  
+  const steps = Math.floor(Math.random() * 15) + 10; // 10-25 steps
+  const currentX = startPos.x || 100;
+  const currentY = startPos.y || 100;
+  
+  for (let i = 0; i <= steps; i++) {
+    const progress = i / steps;
+    // Add slight curve/bezier effect
+    const curveX = Math.sin(progress * Math.PI) * (Math.random() * 50 - 25);
+    const curveY = Math.cos(progress * Math.PI) * (Math.random() * 30 - 15);
+    
+    const x = currentX + (targetX - currentX) * progress + curveX;
+    const y = currentY + (targetY - currentY) * progress + curveY;
+    
+    await page.mouse.move(x, y);
+    await humanDelay(8, 20); // Small delay between movements
+  }
+  
+  // Store last position
+  await page.evaluate((x, y) => {
+    window.mouseX = x;
+    window.mouseY = y;
+  }, targetX, targetY);
+}
+
+// Smooth scroll like human
+async function humanScroll(page, amount) {
+  const steps = Math.floor(Math.abs(amount) / 50) + 3; // One step per ~50px
+  const perStep = amount / steps;
+  
+  for (let i = 0; i < steps; i++) {
+    await page.mouse.wheel(0, perStep);
+    await humanDelay(50, 150); // Random pause between scrolls
+  }
+}
+
+// Type like human - character by character with mistakes and corrections
+async function humanType(page, locator, text) {
+  await locator.click();
+  await humanDelay(100, 300);
+  
+  // Clear existing
+  await locator.fill('');
+  await humanDelay(200, 400);
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    
+    // Occasional typo (5% chance) then backspace
+    if (Math.random() < 0.05 && i > 0) {
+      const wrongChar = String.fromCharCode(97 + Math.floor(Math.random() * 26)); // random letter
+      await locator.type(wrongChar, { delay: Math.random() * 50 + 30 });
+      await humanDelay(100, 300);
+      await locator.press('Backspace');
+      await humanDelay(80, 200);
+    }
+    
+    // Type the correct character
+    await locator.type(char, { delay: Math.random() * 80 + 40 }); // 40-120ms per char
+    await humanDelay(30, 100); // Small pause between chars
+  }
+}
 
 (async () => {
   const url = process.env.TARGET_URL;
@@ -59,11 +128,10 @@ const humanDelay = (min, max) => new Promise(r =>
       "--disable-features=IsolateOrigins,site-per-process",
       "--disable-web-security",
       "--disable-dev-shm-usage",
-      "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.0.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+      "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     ],
   });
 
-  // Check for existing session
   const hasSession = fs.existsSync(AUTH_PATH);
   console.log(hasSession ? `Found existing session at ${AUTH_PATH}` : 'No session found, using stealth mode');
 
@@ -98,7 +166,17 @@ const humanDelay = (min, max) => new Promise(r =>
 
   const page = await context.newPage();
 
-  // Stealth injection (only needed if no session)
+  // Initialize mouse tracking
+  await page.evaluate(() => {
+    window.mouseX = 100;
+    window.mouseY = 100;
+    document.addEventListener('mousemove', (e) => {
+      window.mouseX = e.clientX;
+      window.mouseY = e.clientY;
+    });
+  });
+
+  // Stealth injection
   if (!hasSession) {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -111,7 +189,6 @@ const humanDelay = (min, max) => new Promise(r =>
       delete navigator.__proto__.webdriver;
     });
     
-    // Set realistic headers
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -126,13 +203,15 @@ const humanDelay = (min, max) => new Promise(r =>
     console.error(`Failed to load ${url}:`, err && err.message ? err.message : err);
   }
 
-  // Random delay then scroll like human
+  // Human-like initial behavior - move mouse randomly then scroll
+  await humanMouseMove(page, Math.random() * 300 + 200, Math.random() * 200 + 100);
   await humanDelay(800, 1500);
-  await page.mouse.move(Math.random() * 500, Math.random() * 300);
-  await page.mouse.wheel(0, 400);
+  
+  // Smooth scroll down like human reading
+  await humanScroll(page, 400);
   await humanDelay(500, 1000);
 
-  // --- Check for CAPTCHA (if stealth failed) ---
+  // Check for CAPTCHA
   try {
     const cfDetected = await page.evaluate(() => {
       return !!document.querySelector('.cf-turnstile, .cf-challenge, iframe[src*="challenges.cloudflare"]');
@@ -140,16 +219,15 @@ const humanDelay = (min, max) => new Promise(r =>
     
     if (cfDetected && !hasSession) {
       console.log("⚠️  CAPTCHA detected! Stealth mode failed.");
-      console.log("Solve it manually now, session will be saved for next run...");
-      // Wait longer to give time to solve
+      console.log("Solve it manually now...");
       await page.waitForTimeout(10000);
     }
   } catch (e) {}
 
-  // --- Fill phone number ---
+  // --- Fill phone number with human typing ---
   if (phoneNumber) {
     try {
-      await humanDelay(300, 600);
+      await humanDelay(400, 800);
       let phoneLocator = null;
 
       const p = page.getByPlaceholder('Enter 10-digit number', { exact: false }).first();
@@ -169,30 +247,46 @@ const humanDelay = (min, max) => new Promise(r =>
         throw new Error("Phone input not found");
       }
 
+      // Get element position and move mouse there naturally
+      const box = await phoneLocator.boundingBox();
+      if (box) {
+        await humanMouseMove(page, box.x + box.width/2, box.y + box.height/2);
+      }
+      
       await phoneLocator.scrollIntoViewIfNeeded();
       await humanDelay(200, 400);
-      await phoneLocator.click({ timeout: 3000 }).catch(() => {});
-      await phoneLocator.fill('');
-      await humanDelay(100, 300);
-      await phoneLocator.fill(phoneNumber, { timeout: 5000 });
+      
+      // Human-like typing with character delays
+      await humanType(page, phoneLocator, phoneNumber);
       console.log('Filled phone number:', phoneNumber);
+      
+      await humanDelay(300, 600);
     } catch (err) {
       console.warn('Failed to fill phone number:', err.message);
     }
   }
 
-  // --- Check "I agree" checkbox ---
+  // --- Check "I agree" checkbox with human movement ---
   try {
     await humanDelay(400, 800);
     const agree = page.getByRole('checkbox', { name: /I agree/i }).first();
+    
+    const agreeBox = await agree.boundingBox().catch(() => null);
+    if (agreeBox) {
+      // Move to checkbox like human would
+      await humanMouseMove(page, agreeBox.x + agreeBox.width/2, agreeBox.y + agreeBox.height/2);
+      await humanDelay(200, 400);
+    }
+    
     await agree.waitFor({ state: 'visible', timeout: 3000 }).catch(() => {});
     await agree.check({ timeout: 3000 }).catch(() => {});
     console.log("Checked 'I agree' checkbox");
+    await humanDelay(300, 500);
   } catch (e) {
     console.warn("Failed to check 'I agree' checkbox:", e.message);
   }
 
-  // --- Click LAUNCH ATTACK button ---
+  // --- Click LAUNCH ATTACK button with human behavior ---
   try {
     console.log("Waiting 5 seconds safety delay...");
     await page.waitForTimeout(5000);
@@ -212,17 +306,29 @@ const humanDelay = (min, max) => new Promise(r =>
     }
     
     if (launchBtn) {
+      const btnBox = await launchBtn.boundingBox().catch(() => null);
+      if (btnBox) {
+        // Move to button with human curve path
+        await humanMouseMove(page, btnBox.x + btnBox.width/2, btnBox.y + btnBox.height/2);
+      }
+      
       await launchBtn.scrollIntoViewIfNeeded();
       await humanDelay(200, 500);
+      
+      // Sometimes humans hesitate before important clicks
+      if (Math.random() < 0.3) {
+        await humanDelay(500, 1000);
+      }
+      
       await launchBtn.click({ timeout: 5000 });
       console.log("Clicked LAUNCH ATTACK button");
-      await page.waitForTimeout(2000);
+      await humanDelay(500, 1000);
     }
   } catch (err) {
     console.warn("Failed to click Launch Attack:", err.message);
   }
 
-  // Wait for recording
+  // Final wait for recording
   await page.waitForTimeout(duration * 1000);
 
   // Capture artifacts
@@ -240,10 +346,10 @@ const humanDelay = (min, max) => new Promise(r =>
     console.warn("Failed to capture artifacts:", e.message);
   }
 
-  // Save session for next run (only if page loaded successfully)
+  // Save session
   try {
     await context.storageState({ path: AUTH_PATH });
-    console.log(`Session saved to ${AUTH_PATH} - commit this file for Actions`);
+    console.log(`Session saved to ${AUTH_PATH}`);
   } catch (e) {
     console.warn("Failed to save session:", e.message);
   }

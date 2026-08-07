@@ -15,6 +15,10 @@ on:
         description: "10-digit phone number to enter (no country code, e.g. 9876543210)"
         required: true
         default: ""
+      proxy:
+        description: "Optional proxy (socks5://user:pass@host:port)"
+        required: false
+        default: ""
 
 jobs:
   record:
@@ -26,69 +30,102 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "20"
+
+      - name: Cache session and dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            node_modules
+            auth.json
+          key: ${{ runner.os }}-session-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-session-
 
       - name: Install npm dependencies
         run: |
           if [ -f package-lock.json ]; then
             npm ci
-          elif [ -f package.json ]; then
-            npm install
           else
             npm init -y
             npm install playwright
           fi
 
-      - name: Install Brave browser and xvfb
+      - name: Install Brave browser and dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y apt-transport-https curl gnupg ca-certificates
-          curl -fsSL https://brave-browser-apt-release.s3.brave.com/brave-core.asc -o /tmp/brave-core.asc
-          sudo apt-key add /tmp/brave-core.asc || true
-          echo "deb [arch=amd64] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
+          sudo apt-get install -y apt-transport-https curl gnupg ca-certificates xvfb ffmpeg
+          
+          # Install Brave
+          curl -fsSL https://brave-browser-apt-release.s3.brave.com/brave-core.asc | sudo gpg --dearmor -o /usr/share/keyrings/brave-browser-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
           sudo apt-get update
-          sudo apt-get install -y brave-browser xvfb ffmpeg
+          sudo apt-get install -y brave-browser
 
-      - name: Install Playwright system dependencies
-        run: sudo npx playwright install-deps
+      - name: Install Playwright dependencies
+        run: sudo npx playwright install-deps chromium
 
-      - name: Install Playwright ffmpeg
-        run: npx playwright install ffmpeg
-
-      - name: Find Brave executable path
+      - name: Start FlareSolverr (optional bypass)
+        continue-on-error: true
         run: |
-          which brave-browser || which brave || true
-          echo "BRAVE_PATH=$(which brave-browser || which brave || true)" >> $GITHUB_ENV
+          docker run -d \
+            --name=flaresolverr \
+            -p 8191:8191 \
+            -e LOG_LEVEL=info \
+            -e CAPTCHA_SOLVER=none \
+            ghcr.io/flaresolverr/flaresolverr:latest
+          sleep 15
+          curl -s http://localhost:8191/v1 || echo "FlareSolverr not ready, will proceed without"
 
-      - name: Visit site and record (Brave, visible)
+      - name: Find Brave executable
+        run: |
+          BRAVE=$(which brave-browser || which brave || echo "/usr/bin/brave-browser")
+          echo "BRAVE_PATH=$BRAVE" >> $GITHUB_ENV
+          echo "Found Brave at: $BRAVE"
+
+      - name: Visit site and record
         env:
           TARGET_URL: ${{ inputs.url }}
           DURATION_SECONDS: ${{ inputs.duration }}
           BRAVE_PATH: ${{ env.BRAVE_PATH }}
           PHONE_NUMBER: ${{ inputs.phone }}
-        run: xvfb-run -a node record.js
-
-      - name: Show recorded files (debug)
+          PROXY_SERVER: ${{ inputs.proxy }}
+          FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
-          echo "Working directory: $(pwd)"
-          echo "List top-level:"
-          ls -la || true
-          echo "--- videos/ ---"
-          ls -la videos || true
-          echo "--- artifacts/ ---"
-          ls -la artifacts || true
-          echo "--- screenshots/ ---"
-          ls -la screenshots || true
-          echo "--- recursive find for videos and artifacts ---"
-          find . -maxdepth 6 -type f -name "*.webm" -o -name "*.png" -o -name "page-*.html" -print || true
+          xvfb-run -a --server-args="-screen 0 1920x1080x24" node record.js
 
-      - name: Upload recording and fallback artifacts
+      - name: Save session for next run
         uses: actions/upload-artifact@v4
         with:
-          name: website-recording
+          name: browser-session
+          path: auth.json
+          if-no-files-found: ignore
+
+      - name: Show recorded files
+        if: always()
+        run: |
+          echo "=== Directory listing ==="
+          ls -la
+          echo "=== Videos ==="
+          ls -la videos/ 2>/dev/null || echo "No videos dir"
+          echo "=== Screenshots ==="
+          ls -la screenshots/ 2>/dev/null || echo "No screenshots dir"
+          echo "=== Artifacts ==="
+          ls -la artifacts/ 2>/dev/null || echo "No artifacts dir"
+
+      - name: Upload recording and artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-recording-${{ github.run_id }}
           path: |
             videos/**/*
-            artifacts/**/*
             screenshots/**/*
-            page-*.html
-          if-no-files-found: error
+            artifacts/**/*
+            *.png
+            *.webm
+          if-no-files-found: warn
+
+      - name: Cleanup FlareSolverr
+        if: always()
+        run: docker stop flaresolverr 2>/dev/null || true

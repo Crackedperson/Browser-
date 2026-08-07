@@ -12,12 +12,8 @@ on:
         required: true
         default: "10"
       phone:
-        description: "10-digit phone number to enter (no country code, e.g. 9876543210)"
+        description: "10-digit phone number"
         required: true
-        default: ""
-      proxy:
-        description: "Optional proxy (socks5://user:pass@host:port)"
-        required: false
         default: ""
 
 jobs:
@@ -32,7 +28,7 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Cache session and dependencies
+      - name: Cache session
         uses: actions/cache@v3
         with:
           path: |
@@ -42,46 +38,35 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-session-
 
-      - name: Install npm dependencies
+      - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm init -y
-            npm install playwright
-          fi
+          npm init -y
+          npm install playwright
 
-      - name: Install Brave browser and dependencies
+      - name: Install Playwright ffmpeg
+        run: npx playwright install ffmpeg
+
+      - name: Install Brave and xvfb
         run: |
           sudo apt-get update
-          sudo apt-get install -y apt-transport-https curl gnupg ca-certificates xvfb ffmpeg
-          
-          # Install Brave
+          sudo apt-get install -y xvfb curl gnupg
           curl -fsSL https://brave-browser-apt-release.s3.brave.com/brave-core.asc | sudo gpg --dearmor -o /usr/share/keyrings/brave-browser-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] https://brave-browser-apt-release.s3.brave.com/ stable main" | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
           sudo apt-get update
           sudo apt-get install -y brave-browser
 
-      - name: Install Playwright dependencies
-        run: sudo npx playwright install-deps chromium
+      - name: Find Brave
+        run: |
+          BRAVE=$(which brave-browser || echo "/usr/bin/brave-browser")
+          echo "BRAVE_PATH=$BRAVE" >> $GITHUB_ENV
 
-      - name: Start FlareSolverr (optional bypass)
+      - name: Start FlareSolverr
         continue-on-error: true
         run: |
-          docker run -d \
-            --name=flaresolverr \
-            -p 8191:8191 \
+          docker run -d --name=flaresolverr -p 8191:8191 \
             -e LOG_LEVEL=info \
-            -e CAPTCHA_SOLVER=none \
             ghcr.io/flaresolverr/flaresolverr:latest
           sleep 15
-          curl -s http://localhost:8191/v1 || echo "FlareSolverr not ready, will proceed without"
-
-      - name: Find Brave executable
-        run: |
-          BRAVE=$(which brave-browser || which brave || echo "/usr/bin/brave-browser")
-          echo "BRAVE_PATH=$BRAVE" >> $GITHUB_ENV
-          echo "Found Brave at: $BRAVE"
 
       - name: Visit site and record
         env:
@@ -89,43 +74,30 @@ jobs:
           DURATION_SECONDS: ${{ inputs.duration }}
           BRAVE_PATH: ${{ env.BRAVE_PATH }}
           PHONE_NUMBER: ${{ inputs.phone }}
-          PROXY_SERVER: ${{ inputs.proxy }}
+          # Add your Webshare proxy here or use GitHub Secret
+          PROXY_SERVER: ${{ secrets.WEBSHARE_PROXY }}
           FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
           xvfb-run -a --server-args="-screen 0 1920x1080x24" node record.js
 
-      - name: Save session for next run
+      - name: Save session
         uses: actions/upload-artifact@v4
         with:
           name: browser-session
           path: auth.json
           if-no-files-found: ignore
 
-      - name: Show recorded files
-        if: always()
-        run: |
-          echo "=== Directory listing ==="
-          ls -la
-          echo "=== Videos ==="
-          ls -la videos/ 2>/dev/null || echo "No videos dir"
-          echo "=== Screenshots ==="
-          ls -la screenshots/ 2>/dev/null || echo "No screenshots dir"
-          echo "=== Artifacts ==="
-          ls -la artifacts/ 2>/dev/null || echo "No artifacts dir"
-
-      - name: Upload recording and artifacts
+      - name: Upload all artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: website-recording-${{ github.run_id }}
+          name: recording-${{ github.run_id }}
           path: |
-            videos/**/*
-            screenshots/**/*
-            artifacts/**/*
-            *.png
-            *.webm
+            videos/
+            screenshots/
+            artifacts/
           if-no-files-found: warn
 
-      - name: Cleanup FlareSolverr
+      - name: Cleanup
         if: always()
-        run: docker stop flaresolverr 2>/dev/null || true
+        run: docker stop flaresolverr 2>/dev/null || warn
